@@ -1,23 +1,43 @@
 from decimal import Decimal, setcontext, BasicContext
 from transaction import Transaction
-        
+from exception import OverdrawError, TransactionLimitError, TransactionSequenceError
+import datetime
+from datetime import timedelta
+import logging
+
 class Account():
     # Store the next available id for all new notes
     last_id = 0
+    oldest_date = datetime.date.today()
+    fees = False
     def __init__(self):
         Account.last_id += 1
         self._id = Account.last_id
         self._transactions = []
+        self._oldest = Account.oldest_date
+        self._fees = Account.fees
         
     def new_transaction(self, transaction):
-        """takes an incomingtransaction and checks to see if it is valid before processing it to an account
+        """takes an incoming transaction and checks to see if it is valid before processing it to an account
         """
         # check to make sure transaction does not over draw the account
         overdrawn = self._check_balance(transaction)
         # check whether the daily/monthly limits have been reached
-        limited = self._check_limits(transaction)   
+        limited = self._check_limits(transaction) 
         if overdrawn and limited:
-            self._transactions.append(transaction)
+            if transaction._date < self._oldest:
+                raise TransactionSequenceError(self._oldest)
+            else:
+                self._transactions.append(transaction)
+                self._fees = False
+                #updates the last used date
+                self._oldest = transaction._date
+                # maybe do this in create account and add transaction separately
+                logging.debug(f'{datetime.datetime.now().replace(microsecond = 0)}|DEBUG|' + "Created transaction: {}, {}".format(self._id, transaction._amount))
+        else:
+            if overdrawn == False:
+                raise OverdrawError
+            
             
     def _check_limits(self, transaction):
         return True     
@@ -41,9 +61,18 @@ class Account():
         """
         balance = self.current_balance()
         interest = self._interest_rate * balance
-        n = Transaction(interest, status = True)
-        # add that transaction to the account list
-        self._transactions.append(n)
+        if self._fees == True:
+            raise TransactionSequenceError(self._oldest)
+        else:
+            latest = self._oldest
+            next_month = latest.replace(day=28) + timedelta(days=4)
+            last_day = next_month - timedelta(days=next_month.day)
+            n = Transaction(interest, str(last_day), status = True)
+            logging.debug(f'{datetime.datetime.now().replace(microsecond = 0)}|DEBUG|' + "Created transaction: {}, {}".format(self._id, interest))
+            # add that transaction to the account list
+            self._fees = True
+            self._transactions.append(n)
+            self._oldest = last_day
         
     def ordered_transactions(self):
         """arranges a transaction list by date and returns the ordered list
@@ -74,6 +103,11 @@ class SavingsAccount(Account):
                     daily += 1
                 if transaction._check_month(date):
                     monthly += 1  
+        if daily >= self._daily_limit:
+            raise TransactionLimitError(self._daily_limit, "day")
+        if monthly >= self._monthly_limit:
+            raise TransactionLimitError(self._monthly_limit, "month")
+        
         return daily < self._daily_limit and monthly < self._monthly_limit
     
     def __str__(self):
@@ -92,10 +126,17 @@ class CheckingsAccount(Account):
         """checks account balance agaisnt minimum required balance and processes fee if lower
         """
         super()._check_fees()
+
         balance = self.current_balance()
         if balance < self._balance_threshold:
-            fee = Transaction(-10)
+            latest = self._oldest
+            next_month = latest.replace(day=28) + timedelta(days=4)
+            last_day = next_month - timedelta(days=next_month.day)
+            fee = Transaction(self._low_balance_fee, str(last_day), status = True)
+            # transaction log for fees
+            logging.debug(f'{datetime.datetime.now().replace(microsecond = 0)}|DEBUG|' + "Created transaction: {}, {}".format(self._id, self._low_balance_fee))
             self._transactions.append(fee)
+            self._oldest = last_day
             
     def __str__(self):
         """Formats the type, account number, and balance of the account.
